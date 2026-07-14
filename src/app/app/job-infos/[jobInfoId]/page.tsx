@@ -33,6 +33,11 @@ const options = [
     href: "interviews",
   },
   {
+    label: "Hiring Pipeline",
+    description: "Simulate a real multi-round hiring process for this job.",
+    href: "pipelines",
+  },
+  {
     label: "Refine Your Resume",
     description:
       "Get expert feedback on your resume and improve your chances of landing an interview.",
