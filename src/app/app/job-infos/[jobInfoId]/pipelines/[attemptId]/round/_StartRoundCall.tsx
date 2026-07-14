@@ -1,9 +1,15 @@
 "use client"
 
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { MarkdownRenderer } from "@/components/MarkdownRenderer"
 import { env } from "@/data/env/client"
 import { JobInfoTable } from "@/drizzle/schema"
-import { createInterview, updateInterview } from "@/features/interviews/actions"
+import { updateInterview } from "@/features/interviews/actions"
+import {
+  completeCurrentPipelineRound,
+  startPipelineRound,
+} from "@/features/hiringPipelines/actions"
 import { errorToast } from "@/lib/errorToast"
 import { CondensedMessages } from "@/services/hume/components/CondensedMessages"
 import { condenseChatMessages } from "@/services/hume/lib/condenseChatMessages"
@@ -12,10 +18,15 @@ import { Loader2Icon, MicIcon, MicOffIcon, PhoneOffIcon } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useEffect, useMemo, useRef, useState } from "react"
 
-export function StartCall({
+export function StartRoundCall({
   jobInfo,
   user,
   accessToken,
+  pipelineAttemptId,
+  pipelineRoundId,
+  roundType,
+  roundInstructions,
+  resumeSummary,
 }: {
   accessToken: string
   jobInfo: Pick<
@@ -26,13 +37,26 @@ export function StartCall({
     name: string
     imageUrl: string
   }
+  pipelineAttemptId: string
+  pipelineRoundId: string
+  roundType: string
+  roundInstructions: string
+  resumeSummary: string
 }) {
   const { connect, readyState, chatMetadata, callDurationTimestamp } =
     useVoice()
   const [interviewId, setInterviewId] = useState<string | null>(null)
+  const [questionText, setQuestionText] = useState<string | null>(null)
+  const [notes, setNotes] = useState("")
+  const notesRef = useRef(notes)
   const durationRef = useRef(callDurationTimestamp)
+  const completingRef = useRef(false)
   const router = useRouter()
   durationRef.current = callDurationTimestamp
+  notesRef.current = notes
+
+  const showNotesArea = roundType === "dsa_screen" || roundType === "technical"
+  const progressPath = `/app/job-infos/${jobInfo.id}/pipelines/${pipelineAttemptId}`
 
   // Sync chat ID
   useEffect(() => {
@@ -54,18 +78,31 @@ export function StartCall({
     return () => clearInterval(intervalId)
   }, [interviewId])
 
-  // Handle disconnect
+  // Handle disconnect: score the round, advance/reject, then go back to progress page
   useEffect(() => {
     if (readyState !== VoiceReadyState.CLOSED) return
     if (interviewId == null) {
-      return router.push(`/app/job-infos/${jobInfo.id}/interviews`)
+      return router.push(progressPath)
+    }
+    if (completingRef.current) return
+    completingRef.current = true
+
+    async function finish(id: string) {
+      if (durationRef.current != null) {
+        await updateInterview(id, { duration: durationRef.current })
+      }
+      const res = await completeCurrentPipelineRound({
+        pipelineAttemptId,
+        notes: notesRef.current || undefined,
+      })
+      if (res.error) {
+        errorToast(res.message)
+      }
+      router.push(progressPath)
     }
 
-    if (durationRef.current != null) {
-      updateInterview(interviewId, { duration: durationRef.current })
-    }
-    router.push(`/app/job-infos/${jobInfo.id}/interviews/${interviewId}`)
-  }, [interviewId, readyState, router, jobInfo.id])
+    finish(interviewId)
+  }, [interviewId, readyState, router, progressPath, pipelineAttemptId])
 
   if (readyState === VoiceReadyState.IDLE) {
     return (
@@ -73,11 +110,15 @@ export function StartCall({
         <Button
           size="lg"
           onClick={async () => {
-            const res = await createInterview({ jobInfoId: jobInfo.id })
+            const res = await startPipelineRound({
+              pipelineAttemptId,
+              pipelineRoundId,
+            })
             if (res.error) {
               return errorToast(res.message)
             }
-            setInterviewId(res.id)
+            setInterviewId(res.interviewId)
+            setQuestionText(res.question)
 
             connect({
               auth: { type: "accessToken", value: accessToken },
@@ -89,15 +130,15 @@ export function StartCall({
                   title: jobInfo.title || "Not Specified",
                   description: jobInfo.description,
                   experienceLevel: jobInfo.experienceLevel,
-                  roundInstructions: "",
-                  resumeSummary: "",
-                  dsaQuestion: "",
+                  roundInstructions,
+                  resumeSummary,
+                  dsaQuestion: res.question || "",
                 },
               },
             })
           }}
         >
-          Start Interview
+          Start Round
         </Button>
       </div>
     )
@@ -117,6 +158,42 @@ export function StartCall({
   return (
     <div className="overflow-y-auto h-screen-header flex flex-col-reverse">
       <div className="container py-6 flex flex-col items-center justify-end gap-4">
+        {questionText != null && (
+          <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 rounded border p-4">
+              <div className="text-sm font-medium text-muted-foreground">
+                Your Question
+              </div>
+              <MarkdownRenderer>{questionText}</MarkdownRenderer>
+            </div>
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-muted-foreground">
+                Write your code / pseudocode here (talk through brute force,
+                a better approach, and the optimal solution out loud too)
+              </div>
+              <Textarea
+                value={notes}
+                onChange={e => setNotes(e.target.value)}
+                placeholder="function example() { ... }"
+                className="font-mono min-h-64"
+              />
+            </div>
+          </div>
+        )}
+        {questionText == null && showNotesArea && (
+          <div className="w-full max-w-5xl space-y-2">
+            <div className="text-sm font-medium text-muted-foreground">
+              Write your code / pseudocode here (optional - talk through your
+              approach out loud too)
+            </div>
+            <Textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="function example() { ... }"
+              className="font-mono min-h-40"
+            />
+          </div>
+        )}
         <Messages user={user} />
         <Controls />
       </div>
